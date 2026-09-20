@@ -1,0 +1,6 @@
+perception:
+  rate_hz: 15
+
+mission:
+  timeout_s: 60
+  found_distance_m: 0.80

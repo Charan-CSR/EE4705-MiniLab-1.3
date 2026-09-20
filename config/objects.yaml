@@ -1,0 +1,3 @@
+# Ground-truth object locations for distance logging/evaluation ONLY.
+# Never use these positions to steer the robot.
+objects: []

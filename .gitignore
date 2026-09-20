@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.conda/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.key
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Generated/runtime files
+*.log
+runs/
+outputs/
+results/*.png
+results/*.mp4
+
+# Large demo videos
+videos/*.mp4
+videos/*.mov
+videos/*.avi
+
+# Model weights / generated models
+*.pt
+*.onnx
+*.engine
+
+# MuJoCo / temporary
+*.mjb
+tmp/
