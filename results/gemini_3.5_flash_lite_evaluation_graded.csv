@@ -1,0 +1,22 @@
+timestamp,provider,command,parsed_actions,latency_seconds,result
+2026-09-24 10:26:13,Gemini,Move forward for 2 seconds,"[{""action"": ""move"", ""vx"": 0.4, ""vy"": 0.0, ""wz"": 0.0, ""duration"": 2.0}]",1.165,Pass
+2026-09-24 10:26:24,Gemini,Move backward for 1 second,"[{""action"": ""move"", ""vx"": -0.4, ""vy"": 0.0, ""wz"": 0.0, ""duration"": 1.0}]",1.32,Pass
+2026-09-24 10:26:32,Gemini,Move left for 2 seconds,"[{""action"": ""move"", ""vx"": 0.0, ""vy"": 0.4, ""wz"": 0.0, ""duration"": 2.0}]",1.194,Pass
+2026-09-24 10:26:38,Gemini,Move right for 2 seconds,"[{""action"": ""move"", ""vx"": 0.0, ""vy"": -0.4, ""wz"": 0.0, ""duration"": 2.0}]",1.148,Pass
+2026-09-24 10:26:44,Gemini,Turn left 90 degrees,"[{""action"": ""turn"", ""angle_deg"": 90.0}]",2.078,Pass
+2026-09-24 10:26:59,Gemini,Turn right 45 degrees,"[{""action"": ""turn"", ""angle_deg"": -45.0}]",1.002,Pass
+2026-09-24 10:27:17,Gemini,"Move forward for 2 seconds, then turn left 45 degrees","[{""action"": ""move"", ""vx"": 0.4, ""vy"": 0.0, ""wz"": 0.0, ""duration"": 2.0}, {""action"": ""turn"", ""angle_deg"": 45.0}]",1.213,Pass
+2026-09-24 10:27:49,Gemini,"Turn right 30 degrees, then move forward for 1 second","[{""action"": ""turn"", ""angle_deg"": -30.0}, {""action"": ""move"", ""vx"": 0.4, ""vy"": 0.0, ""wz"": 0.0, ""duration"": 1.0}]",1.211,Pass
+2026-09-24 10:28:00,Gemini,Go straight ahead for 2 seconds,"[{""action"": ""move"", ""vx"": 0.4, ""vy"": 0.0, ""wz"": 0.0, ""duration"": 2.0}]",1.199,Pass
+2026-09-24 10:28:08,Gemini,Reverse for 1 second,"[{""action"": ""move"", ""vx"": -0.4, ""vy"": 0.0, ""wz"": 0.0, ""duration"": 1.0}]",1.082,Pass
+2026-09-24 10:28:14,Gemini,Shift to the left for 2 seconds,"[{""action"": ""move"", ""vx"": 0.0, ""vy"": 0.4, ""wz"": 0.0, ""duration"": 2.0}]",0.9,Pass
+2026-09-24 10:28:22,Gemini,Rotate clockwise by 90 degrees,"[{""action"": ""turn"", ""angle_deg"": -90.0}]",2.892,Pass
+2026-09-24 10:28:37,Gemini,Make a quarter turn to the left,"[{""action"": ""turn"", ""angle_deg"": 90.0}]",1.577,Fail
+2026-09-24 10:31:32,Gemini,Stop,"[{""action"": ""stop""}]",0.962,Pass
+2026-09-24 10:31:37,Gemini,Move forward,"[{""action"": ""chat"", ""message"": ""Please specify the duration for moving forward.""}]",1.004,Pass
+2026-09-24 10:31:42,Gemini,Turn left,"[{""action"": ""chat"", ""message"": ""Please specify the turn angle in degrees.""}]",0.927,Pass
+2026-09-24 10:31:48,Gemini,Jump over the table,"[{""action"": ""chat"", ""message"": ""I cannot jump over objects. Please give a valid command.""}]",1.125,Pass
+2026-09-24 10:31:56,Gemini,Dance for me,"[{""action"": ""chat"", ""message"": ""I am not sure how to dance. Please give me specific movement, turn, or navigation commands.""}]",1.902,Pass
+2026-09-24 10:32:01,Gemini,Move forward for -2 seconds,"[{""action"": ""chat"", ""message"": ""Duration cannot be negative. Please specify a positive duration for moving forward.""}]",1.046,Pass
+2026-09-24 10:32:09,Gemini,Avanza durante dos segundos (Move forward for two seconds),"[{""action"": ""move"", ""vx"": 0.4, ""vy"": 0.0, ""wz"": 0.0, ""duration"": 2.0}]",1.056,Fail
+,,PASS PERCENTAGE,18/20,,90%

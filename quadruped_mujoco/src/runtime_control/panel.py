@@ -456,7 +456,7 @@ class RuntimeControlPanel:
             "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"
         ) if shutil.which(name)), None)
         if chrome is None:
-            webbrowser.open(self.url, new=2)
+            # webbrowser.open(self.url, new=2)
             return
         profile = tempfile.mkdtemp(prefix="himloco_runtime_ui_")
         command = [
@@ -470,7 +470,7 @@ class RuntimeControlPanel:
             )
         except OSError:
             shutil.rmtree(profile, ignore_errors=True)
-            webbrowser.open(self.url, new=2)
+            #webbrowser.open(self.url, new=2)
             return
         with self._browser_lock:
             self._browser_process = process

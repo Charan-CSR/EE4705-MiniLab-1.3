@@ -1,4 +1,4 @@
-"""
+if __name__ == "__main__":"""
 Dog Sim2Sim — IsaacGym → MuJoCo
 
 Joint order:
@@ -17,6 +17,18 @@ import numpy as np
 import onnxruntime as ort
 import yaml
 from collections import deque
+from queue import Queue
+import threading
+import json
+
+# Task 3: natural-language command interface
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.llm.parser import GeminiCommandParser, OllamaCommandParser
+from src.executor.executor import CommandExecutor
 
 
 
@@ -170,6 +182,97 @@ _turn_active = False
 _turn_target = 0.0
 # Queue of autonomous motion actions
 _motion_queue = deque()
+
+
+# Task 3: commands parsed by the LLM are passed safely
+# from the terminal thread to the MuJoCo simulation thread.
+_llm_action_queue = Queue()
+
+_history_path = PROJECT_ROOT / "results" / "command_history.json"
+
+if _history_path.exists():
+    try:
+        with open(_history_path, "r", encoding="utf-8") as file:
+            _command_history = json.load(file)
+    except (json.JSONDecodeError, OSError):
+        _command_history = []
+else:
+    _command_history = []
+
+
+
+def save_command_history():
+    """Save command history to disk."""
+
+    _history_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(_history_path, "w", encoding="utf-8") as file:
+        json.dump(_command_history, file, indent=4)
+
+
+
+
+
+def command_input_loop():
+    """Read English commands and parse them without blocking MuJoCo."""
+
+    print("\nSelect LLM provider:")
+    print("1 - Gemini")
+    print("2 - Ollama (Qwen3 4B)")
+
+    while True:
+        choice = input("Enter choice [1/2]: ").strip()
+
+        if choice == "1":
+            llm_parser = GeminiCommandParser()
+            provider_name = "Gemini"
+            break
+
+        elif choice == "2":
+            llm_parser = OllamaCommandParser()
+            provider_name = "Ollama (Qwen3 4B)"
+            break
+
+        else:
+            print("[LLM] Invalid choice. Enter 1 or 2.")
+
+    print(f"\n[LLM] Natural-language control ready ({provider_name}).")
+    print("[LLM] Type a command and press ENTER.\n")
+
+
+    while True:
+        try:
+            command = input("> ").strip()
+
+            if not command:
+                continue
+
+            print(f"[CMD] {command}")
+
+            start_time = time.perf_counter()
+
+            actions = llm_parser.parse(command)
+
+            latency = time.perf_counter() - start_time
+
+            _command_history.append({
+                "command": command,
+                "actions": actions,
+            })
+
+            save_command_history()
+
+            print(f"[LATENCY] {latency:.3f} s")
+            print(f"[PARSED] {actions}")
+
+            _llm_action_queue.put(actions)
+
+        except EOFError:
+            break
+
+        except Exception as exc:
+            print(f"[LLM ERROR] Command could not be parsed: {exc}")
+            print("[LLM] Please try the command again.")
 
 
 # Direction key mapping: evdev scancode → direction letter
@@ -388,6 +491,16 @@ def stop():
     _turn_active = False
 
     print("[DONE] stop")
+
+
+# Task 3 executor connected to Task 2 motion skills
+command_executor = CommandExecutor(
+    move_fn=move,
+    turn_fn=turn,
+    stop_fn=stop,
+)
+
+
 
 
 
@@ -697,11 +810,24 @@ if __name__ == "__main__":
                 azimuth=135.0,
                 elevation=-25.0,
             )
-        # Temporary autonomous movement test
 
+        command_thread = threading.Thread(
+         target=command_input_loop,
+         daemon=True,
+        )
+        command_thread.start()
+   
+
+        # Temporary autonomous movement test
 
         start = time.time()
         while viewer.is_running() and time.time() - start < simulation_duration:
+                        # Task 3: execute any commands returned by the LLM thread
+            while not _llm_action_queue.empty():
+                actions = _llm_action_queue.get()
+                command_executor.execute(actions)
+
+
             step_start = time.time()
 
             # The browser and the physical keyboard both update the motion
@@ -873,7 +999,7 @@ if __name__ == "__main__":
             mujoco.mj_step(mj_model, mj_data)
             count += 1
 
-            if count % (control_decimation * 50) == 0:
+            if False and count % (control_decimation * 50) == 0:
                 grav = quat_rotate_inverse(quat_xyzw, np.array([0., 0., -1.]))
                 h = mj_data.qpos[2]
                 print(f"[{time.time()-start:.1f}s] Step {count} H={h:.3f}(cmd={height_cmd:.2f}) "

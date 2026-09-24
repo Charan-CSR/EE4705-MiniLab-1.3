@@ -43,3 +43,4 @@ videos/*.avi
 # MuJoCo / temporary
 *.mjb
 tmp/
+results/command_history.json
