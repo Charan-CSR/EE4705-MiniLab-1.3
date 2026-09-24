@@ -38,6 +38,8 @@ videos/*.avi
 # Model weights / generated models
 *.pt
 *.onnx
+*.onnx
+!quadruped_mujoco/eg/model_3400.onnx
 *.engine
 
 # MuJoCo / temporary
