@@ -187,6 +187,7 @@ _motion_queue = deque()
 # Task 3: commands parsed by the LLM are passed safely
 # from the terminal thread to the MuJoCo simulation thread.
 _llm_action_queue = Queue()
+_trial_context = None
 
 _history_path = PROJECT_ROOT / "results" / "command_history.json"
 
@@ -264,6 +265,14 @@ def command_input_loop():
 
             print(f"[LATENCY] {latency:.3f} s")
             print(f"[PARSED] {actions}")
+
+            if _task4 is not None:
+                for action in actions:
+                    if action.get('action') == 'goto_object':
+                        action['_trial_context'] = {
+                            'command': command, 'provider': provider_name,
+                            'parse_latency_s': round(latency, 3),
+                        }
 
             _llm_action_queue.put(actions)
 
@@ -351,6 +360,7 @@ GLFW_KEY_Y = 89;  GLFW_KEY_X = 88
 GLFW_KEY_SPACE = 32
 
 # Global state
+_task4 = None  # Task 4 bridge is enabled explicitly by a CLI flag.
 height_cmd = 0.25
 reset_flag = False
 print_action_flag = False
@@ -370,6 +380,7 @@ def key_callback(keycode):
     elif keycode == GLFW_KEY_Y:
         print_action_flag = not print_action_flag
     elif keycode == GLFW_KEY_X:
+        stop()
         _pressed_keys.clear()
     elif keycode == GLFW_KEY_SPACE and "runtime" in globals():
         runtime.request_push()
@@ -434,7 +445,7 @@ def start_next_action(mj_data):
     global _turn_active, _turn_target
 
     # Current action still running
-    if _auto_cmd_active or _turn_active:
+    if _auto_cmd_active or _turn_active or (_task4 is not None and _task4.busy):
         return
 
     # Nothing waiting
@@ -442,6 +453,12 @@ def start_next_action(mj_data):
         return
 
     action = _motion_queue.popleft()
+    if _task4 is not None and action["type"] != "goto_object":
+        _task4.release()
+    if action["type"] == "goto_object":
+        _task4.start(action["class_name"], action["color"], get_yaw(mj_data),
+                     context=action.get('context'))
+        return
 
     # Start MOVE
     if action["type"] == "move":
@@ -485,6 +502,13 @@ def stop():
     global _turn_active
 
     _motion_queue.clear()
+    while not _llm_action_queue.empty():
+        _llm_action_queue.get_nowait()
+    if _task4 is not None:
+        _task4.cancel()
+    if "runtime" in globals():
+        runtime.sync_stop_to_panel()
+    _pressed_keys.clear()
 
     _auto_cmd = np.zeros(3, dtype=np.float32)
     _auto_cmd_active = False
@@ -493,11 +517,39 @@ def stop():
     print("[DONE] stop")
 
 
+def goto_object(class_name, color):
+    """Queue navigation in order with existing Task 2 move/turn actions."""
+    if _task4 is None:
+        print("[CMD] rejected reason=restart_with_--task4")
+        return
+    _motion_queue.append({"type": "goto_object", "class_name": class_name,
+                          "color": color, "context": _trial_context})
+    print(f"[QUEUE] goto_object class={class_name} color={color}")
+
+
+def task4_test_input_loop():
+    """Development interface only; NOT the required Task 3 LLM parser."""
+    print("[TEST] Direct API test. Type: goto cup red | goto cup white | goto bowl green | stop")
+    while True:
+        try:
+            words = input("test> ").strip().lower().split()
+        except EOFError:
+            return
+        if words == ["stop"]:
+            _llm_action_queue.put([{"action": "stop"}])
+        elif len(words) == 3 and words[0] == "goto":
+            print(f"[CMD] test_only goto_object class={words[1]} color={words[2]}")
+            _llm_action_queue.put([{"action": "goto_object", "class_name": words[1], "color": words[2]}])
+        else:
+            print("[CMD] rejected reason=use_exact_test_syntax")
+
+
 # Task 3 executor connected to Task 2 motion skills
 command_executor = CommandExecutor(
     move_fn=move,
     turn_fn=turn,
     stop_fn=stop,
+    goto_object_fn=goto_object,
 )
 
 
@@ -666,7 +718,16 @@ if __name__ == "__main__":
         help="enable only the browser live-tuning panel (no native MuJoCo viewer)",
     )
     parser.add_argument("--gui-port", type=int, default=8765, help="browser panel port")
+    parser.add_argument("--task4", action="store_true", help="Enable camera navigation with the Task 3 parser")
+    parser.add_argument("--task4-test", action="store_true", help="Direct API test without an LLM; not a graded demo")
+    parser.add_argument('--trial-run', default='development',
+                        help='Results group name, e.g. evaluation_01; letters, digits, _ and - only')
+    parser.add_argument("--task4-align-only", action="store_true", help="Search and center only; no forward approach")
     args = parser.parse_args()
+    if args.task4_align_only and not (args.task4 or args.task4_test):
+        parser.error("--task4-align-only requires --task4 or --task4-test")
+    if (args.task4 or args.task4_test) and (not args.gui or args.no_policy):
+        parser.error("Task 4 currently requires --gui and the walking policy")
     if args.gui and args.headless:
         parser.error("--gui and --headless cannot be used together")
     if args.duration is not None and args.duration <= 0:
@@ -737,6 +798,23 @@ if __name__ == "__main__":
     mj_data = scene.data
     runtime = scene.runtime
     motor_delay = MotorCommandDelay(simulation_dt)
+    if args.task4 or args.task4_test:
+        from src.perception.goto_object import Task4Bridge
+        for field in ("latest_front_frame", "last_front_camera_time", "render_lock"):
+            if not hasattr(runtime, field):
+                raise RuntimeError(f"Task 2 runtime missing {field}; use the handover version")
+        _task4 = Task4Bridge(runtime, mj_model, mj_data,
+                             align_only=args.task4_align_only,
+                             run_label=args.trial_run,
+                             mode='direct_test' if args.task4_test else 'llm')
+        # Browser E-Stop must cancel autonomous actions, not just keyboard input.
+        original_consume_actions = runtime.panel.consume_actions
+        def task4_consume_actions():
+            actions = original_consume_actions()
+            if "stop" in actions:
+                stop()
+            return actions
+        runtime.panel.consume_actions = task4_consume_actions
 
     print(f"\n[VERIFY] MuJoCo joint order:")
     for i in range(mj_model.njnt):
@@ -798,220 +876,237 @@ if __name__ == "__main__":
         args.gui or args.headless,
         key_callback=key_callback,
     )
-    with display as viewer:
-        # The browser and the native viewer are mutually exclusive display
-        # modes, to avoid rendering twice and slowing the simulation down.
-        if not args.gui and not args.headless:
-            setup_tracking_camera(
-                viewer,
-                mj_model,
-                "trunk",
-                distance=2.0,
-                azimuth=135.0,
-                elevation=-25.0,
-            )
+    try:
+        with display as viewer:
+            # The browser and the native viewer are mutually exclusive display
+            # modes, to avoid rendering twice and slowing the simulation down.
+            if not args.gui and not args.headless:
+                setup_tracking_camera(
+                    viewer,
+                    mj_model,
+                    "trunk",
+                    distance=2.0,
+                    azimuth=135.0,
+                    elevation=-25.0,
+                )
 
-        command_thread = threading.Thread(
-         target=command_input_loop,
-         daemon=True,
-        )
-        command_thread.start()
+            command_thread = threading.Thread(
+             target=task4_test_input_loop if args.task4_test else command_input_loop,
+             daemon=True,
+            )
+            command_thread.start()
    
 
-        # Temporary autonomous movement test
+            # Temporary autonomous movement test
 
-        start = time.time()
-        while viewer.is_running() and time.time() - start < simulation_duration:
-                        # Task 3: execute any commands returned by the LLM thread
-            while not _llm_action_queue.empty():
-                actions = _llm_action_queue.get()
-                command_executor.execute(actions)
-
-
-            step_start = time.time()
-
-            # The browser and the physical keyboard both update the motion
-            # command. Without --gui the original keyboard logic is kept.
-            # Autonomous commands take priority over manual controls
-                        # Closed-loop turn takes highest priority
-            runtime.update_command(_pressed_keys)
-            if _turn_active:
-                current_yaw = get_yaw(mj_data)
-                yaw_error = wrap_angle(_turn_target - current_yaw)
+            start = time.time()
+            while viewer.is_running() and time.time() - start < simulation_duration:
+                            # Task 3: execute any commands returned by the LLM thread
+                while not _llm_action_queue.empty():
+                    actions = _llm_action_queue.get()
+                    _trial_context = next((action.get('_trial_context') for action in actions
+                                           if action.get('action') == 'goto_object'), None)
+                    try:
+                        command_executor.execute(actions)
+                    finally:
+                        _trial_context = None
 
 
+                step_start = time.time()
 
-                # Stop when within 2 degrees
-                if abs(yaw_error) < np.deg2rad(2.0):
-                    _turn_active = False
+                # The browser and the physical keyboard both update the motion
+                # command. Without --gui the original keyboard logic is kept.
+                # Autonomous commands take priority over manual controls
+                            # Closed-loop turn takes highest priority
+                runtime.update_command(_pressed_keys)
+                if _task4 is not None and (_task4.active or _task4.hold):
+                    cmd = np.asarray(_task4.command(get_yaw(mj_data)), dtype=np.float32)
+                    if _task4.failure_pending:
+                        _motion_queue.clear()
+                        _task4.failure_pending = False
+                elif _turn_active:
+                    current_yaw = get_yaw(mj_data)
+                    yaw_error = wrap_angle(_turn_target - current_yaw)
+
+
+
+                    # Stop when within 2 degrees
+                    if abs(yaw_error) < np.deg2rad(2.0):
+                        _turn_active = False
+                        cmd = np.zeros(3, dtype=np.float32)
+
+                        print(
+                         f"[TURN] target={np.rad2deg(_turn_target):.1f} deg, "
+                         f"final_error={np.rad2deg(yaw_error):.2f} deg"
+                        )
+                        print("[DONE] turn")
+
+
+                    else:
+                        # Proportional closed-loop turning
+                        wz_cmd = np.clip(1.5 * yaw_error, -0.6, 0.6)
+                        # Keep enough yaw command to overcome the policy's turning dead zone
+                        if abs(wz_cmd) < 0.30:
+                         wz_cmd = np.sign(yaw_error) * 0.30
+
+                        cmd = np.array(
+                            [0.0, 0.0, wz_cmd],
+                            dtype=np.float32
+                        )
+
+                # Timed autonomous movement
+                elif _auto_cmd_active:
+                    cmd = get_commands()
+
+                # Browser/manual controls
+                else:
+                    cmd = np.array([
+                        runtime_config["command"]["linear_x"],
+                        runtime_config["command"]["linear_y"],
+                        runtime_config["command"]["yaw"],
+                    ], dtype=np.float32)
+                    height_cmd = runtime_config["command"]["height"]
+
+
+                runtime_state = runtime.runtime_control(mj_model, mj_data)
+
+                if runtime.consume_reset():
+                    reset_flag = True
+
+                if reset_flag:
+                    if _task4 is not None:
+                        _task4.cancel("reset_or_map_change")
+                        _task4.release()
                     cmd = np.zeros(3, dtype=np.float32)
-
-                    print(
-                     f"[TURN] target={np.rad2deg(_turn_target):.1f} deg, "
-                     f"final_error={np.rad2deg(yaw_error):.2f} deg"
+                    reset_robot(
+                        mj_model,
+                        mj_data,
+                        DEFAULT_ANGLES_MUJOCO,
+                        runtime_config["simulation"]["initial_position"],
+                        runtime_config["simulation"]["initial_quaternion"],
                     )
-                    print("[DONE] turn")
+                    obs_history.reset()
+                    last_action_isaac[:] = 0; action_isaac[:] = 0; count = 0; inference_count = 0
+                    print_action_flag = False
+                    height_cmd = runtime_config["command"]["height"]
+                    motor_delay.reset()
+                    runtime.reset_simulation_state()
+                    # Clear autonomous motion state after reset
+                    _motion_queue.clear()
+                    _auto_cmd[:] = 0.0
+                    _auto_cmd_active = False
+                    _turn_active = False
 
 
-                else:
-                    # Proportional closed-loop turning
-                    wz_cmd = np.clip(1.5 * yaw_error, -0.6, 0.6)
-                    # Keep enough yaw command to overcome the policy's turning dead zone
-                    if abs(wz_cmd) < 0.30:
-                     wz_cmd = np.sign(yaw_error) * 0.30
-
-                    cmd = np.array(
-                        [0.0, 0.0, wz_cmd],
-                        dtype=np.float32
-                    )
-
-            # Timed autonomous movement
-            elif _auto_cmd_active:
-                cmd = get_commands()
-
-            # Browser/manual controls
-            else:
-                cmd = np.array([
-                    runtime_config["command"]["linear_x"],
-                    runtime_config["command"]["linear_y"],
-                    runtime_config["command"]["yaw"],
-                ], dtype=np.float32)
-                height_cmd = runtime_config["command"]["height"]
+                    reset_flag = False
 
 
-            runtime_state = runtime.runtime_control(mj_model, mj_data)
+                start_next_action(mj_data)
 
-            if runtime.consume_reset():
-                reset_flag = True
+                # Read the MuJoCo state
+                joint_q_mujoco  = mj_data.qpos[7:19].astype(np.float64)
+                joint_dq_mujoco = mj_data.qvel[6:18].astype(np.float64)
 
-            if reset_flag:
-                reset_robot(
-                    mj_model,
-                    mj_data,
-                    DEFAULT_ANGLES_MUJOCO,
-                    runtime_config["simulation"]["initial_position"],
-                    runtime_config["simulation"]["initial_quaternion"],
+                # ★ Remap to IsaacGym order (fed to the policy)
+                joint_q_isaac  = joint_q_mujoco[MUJOCO_TO_ISAAC]
+                joint_dq_isaac = joint_dq_mujoco[MUJOCO_TO_ISAAC]
+
+                quat_wxyz = mj_data.qpos[3:7]
+                quat_xyzw = np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]])
+                omega = mj_data.qvel[3:6].astype(np.float64)
+
+                if count % control_decimation == 0:
+                    if not args.no_policy:
+                        single_obs = build_single_obs(
+                            quat_xyzw, omega, joint_q_isaac, joint_dq_isaac,
+                            last_action_isaac, DEFAULT_ANGLES_ISAAC,
+                            cmd, cmd_scale,
+                            ang_vel_scale, dof_pos_scale, dof_vel_scale, clip_obs,
+                            height_cmd=height_cmd
+                        )
+                        obs_history.push(single_obs)
+                        obs_input = obs_history.get()
+
+                        if args.verbose_inference and inference_count < 10:
+                            print(f"\n{'='*60}")
+                            print(f"[inference #{inference_count}] full 276-dim history obs"
+                                  f" (6 frames × 46 dims):")
+                            buf = obs_history.buffer
+                            for slot in range(HISTORY_LEN):
+                                base = slot * 46
+                                frame = buf[base:base+46]
+                                print(f"\n  --- frame {slot} (offset {base}) ---")
+                                print(f"    cmd:          {frame[0:3]}")
+                                print(f"    gyro_body:    {frame[3:6]}")
+                                print(f"    proj_gravity: {frame[6:9]}")
+                                print(f"    dof_pos_dev:  {np.array2string(frame[9:21], precision=4, separator=', ')}")
+                                print(f"    dof_vel:      {np.array2string(frame[21:33], precision=4, separator=', ')}")
+                                print(f"    last_action:  {np.array2string(frame[33:45], precision=4, separator=', ')}")
+                                print(f"    height_cmd:   {frame[45]:.4f}")
+                                print(f"    frame norm:   {np.linalg.norm(frame):.4f}")
+                            if inference_count == 9:
+                                print(f"\n[INFO] first 10 obs frames printed;"
+                                      f" press Y to start printing model output.")
+                            print(f"{'='*60}")
+
+                        action_raw = policy.run([output_name], {input_name: obs_input})[0][0]
+                        action_isaac[:] = np.clip(action_raw, -10.0, 10.0)
+                        last_action_isaac = action_isaac.astype(np.float32)
+
+                        if inference_count >= 10 and print_action_flag:
+                            print(f"\n[inference #{inference_count}] model output action x"
+                                  f" {OUTPUT_PRINT_SCALE} (Isaac order FL,FR,RL,RR):")
+                            for j in range(12):
+                                print(f"    {labels[j]:12s}: action={action_isaac[j] * OUTPUT_PRINT_SCALE:+.4f}")
+
+                        inference_count += 1
+
+                        # ★ Target angles: IsaacGym order → MuJoCo order
+                        target_q_isaac = action_isaac * action_scale + DEFAULT_ANGLES_ISAAC
+                        target_q_mujoco = target_q_isaac[ISAAC_TO_MUJOCO]
+                    else:
+                        target_q_mujoco = DEFAULT_ANGLES_MUJOCO.copy()
+
+                # PD control (MuJoCo order). Live Kp/Kd, motor strength, delay and
+                # torque limits all take effect right before writing data.ctrl.
+                applied_target_q = motor_delay.apply(
+                    target_q_mujoco, runtime_state["motor_delay_ms"]
                 )
-                obs_history.reset()
-                last_action_isaac[:] = 0; action_isaac[:] = 0; count = 0; inference_count = 0
-                print_action_flag = False
-                height_cmd = runtime_config["command"]["height"]
-                motor_delay.reset()
-                runtime.reset_simulation_state()
-                # Clear autonomous motion state after reset
-                _motion_queue.clear()
-                _auto_cmd[:] = 0.0
-                _auto_cmd_active = False
-                _turn_active = False
+                effective_tau_limits = scale_torque_limits(
+                    tau_limits_mujoco,
+                    runtime_state["torque_limit"],
+                    reference_limit=TAU_LIMIT_CALF,
+                )
+                tau = compute_pd_torques(
+                    applied_target_q,
+                    joint_q_mujoco,
+                    joint_dq_mujoco,
+                    runtime_state["kp"],
+                    runtime_state["kd"],
+                    motor_strength=runtime_state["motor_strength"],
+                    torque_limit=effective_tau_limits,
+                )
+                mj_data.ctrl[:NUM_ACTIONS] = tau
 
+                runtime.apply_external_forces(mj_model, mj_data)
+                mujoco.mj_step(mj_model, mj_data)
+                count += 1
 
-                reset_flag = False
+                if False and count % (control_decimation * 50) == 0:
+                    grav = quat_rotate_inverse(quat_xyzw, np.array([0., 0., -1.]))
+                    h = mj_data.qpos[2]
+                    print(f"[{time.time()-start:.1f}s] Step {count} H={h:.3f}(cmd={height_cmd:.2f}) "
+                          f"vx={mj_data.qvel[0]:.2f} vy={mj_data.qvel[1]:.2f} wz={mj_data.qvel[5]:.2f} "
+                          f"grav_z={grav[2]:.3f} "
+                          f"act=[{action_isaac.min():.2f},{action_isaac.max():.2f}]")
 
+                if not args.gui and not args.headless:
+                    viewer.sync()
+                elapsed = time.time() - step_start
+                time.sleep(max(0.001, simulation_dt - elapsed))
 
-            start_next_action(mj_data)
-
-            # Read the MuJoCo state
-            joint_q_mujoco  = mj_data.qpos[7:19].astype(np.float64)
-            joint_dq_mujoco = mj_data.qvel[6:18].astype(np.float64)
-
-            # ★ Remap to IsaacGym order (fed to the policy)
-            joint_q_isaac  = joint_q_mujoco[MUJOCO_TO_ISAAC]
-            joint_dq_isaac = joint_dq_mujoco[MUJOCO_TO_ISAAC]
-
-            quat_wxyz = mj_data.qpos[3:7]
-            quat_xyzw = np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]])
-            omega = mj_data.qvel[3:6].astype(np.float64)
-
-            if count % control_decimation == 0:
-                if not args.no_policy:
-                    single_obs = build_single_obs(
-                        quat_xyzw, omega, joint_q_isaac, joint_dq_isaac,
-                        last_action_isaac, DEFAULT_ANGLES_ISAAC,
-                        cmd, cmd_scale,
-                        ang_vel_scale, dof_pos_scale, dof_vel_scale, clip_obs,
-                        height_cmd=height_cmd
-                    )
-                    obs_history.push(single_obs)
-                    obs_input = obs_history.get()
-
-                    if args.verbose_inference and inference_count < 10:
-                        print(f"\n{'='*60}")
-                        print(f"[inference #{inference_count}] full 276-dim history obs"
-                              f" (6 frames × 46 dims):")
-                        buf = obs_history.buffer
-                        for slot in range(HISTORY_LEN):
-                            base = slot * 46
-                            frame = buf[base:base+46]
-                            print(f"\n  --- frame {slot} (offset {base}) ---")
-                            print(f"    cmd:          {frame[0:3]}")
-                            print(f"    gyro_body:    {frame[3:6]}")
-                            print(f"    proj_gravity: {frame[6:9]}")
-                            print(f"    dof_pos_dev:  {np.array2string(frame[9:21], precision=4, separator=', ')}")
-                            print(f"    dof_vel:      {np.array2string(frame[21:33], precision=4, separator=', ')}")
-                            print(f"    last_action:  {np.array2string(frame[33:45], precision=4, separator=', ')}")
-                            print(f"    height_cmd:   {frame[45]:.4f}")
-                            print(f"    frame norm:   {np.linalg.norm(frame):.4f}")
-                        if inference_count == 9:
-                            print(f"\n[INFO] first 10 obs frames printed;"
-                                  f" press Y to start printing model output.")
-                        print(f"{'='*60}")
-
-                    action_raw = policy.run([output_name], {input_name: obs_input})[0][0]
-                    action_isaac[:] = np.clip(action_raw, -10.0, 10.0)
-                    last_action_isaac = action_isaac.astype(np.float32)
-
-                    if inference_count >= 10 and print_action_flag:
-                        print(f"\n[inference #{inference_count}] model output action x"
-                              f" {OUTPUT_PRINT_SCALE} (Isaac order FL,FR,RL,RR):")
-                        for j in range(12):
-                            print(f"    {labels[j]:12s}: action={action_isaac[j] * OUTPUT_PRINT_SCALE:+.4f}")
-
-                    inference_count += 1
-
-                    # ★ Target angles: IsaacGym order → MuJoCo order
-                    target_q_isaac = action_isaac * action_scale + DEFAULT_ANGLES_ISAAC
-                    target_q_mujoco = target_q_isaac[ISAAC_TO_MUJOCO]
-                else:
-                    target_q_mujoco = DEFAULT_ANGLES_MUJOCO.copy()
-
-            # PD control (MuJoCo order). Live Kp/Kd, motor strength, delay and
-            # torque limits all take effect right before writing data.ctrl.
-            applied_target_q = motor_delay.apply(
-                target_q_mujoco, runtime_state["motor_delay_ms"]
-            )
-            effective_tau_limits = scale_torque_limits(
-                tau_limits_mujoco,
-                runtime_state["torque_limit"],
-                reference_limit=TAU_LIMIT_CALF,
-            )
-            tau = compute_pd_torques(
-                applied_target_q,
-                joint_q_mujoco,
-                joint_dq_mujoco,
-                runtime_state["kp"],
-                runtime_state["kd"],
-                motor_strength=runtime_state["motor_strength"],
-                torque_limit=effective_tau_limits,
-            )
-            mj_data.ctrl[:NUM_ACTIONS] = tau
-
-            runtime.apply_external_forces(mj_model, mj_data)
-            mujoco.mj_step(mj_model, mj_data)
-            count += 1
-
-            if False and count % (control_decimation * 50) == 0:
-                grav = quat_rotate_inverse(quat_xyzw, np.array([0., 0., -1.]))
-                h = mj_data.qpos[2]
-                print(f"[{time.time()-start:.1f}s] Step {count} H={h:.3f}(cmd={height_cmd:.2f}) "
-                      f"vx={mj_data.qvel[0]:.2f} vy={mj_data.qvel[1]:.2f} wz={mj_data.qvel[5]:.2f} "
-                      f"grav_z={grav[2]:.3f} "
-                      f"act=[{action_isaac.min():.2f},{action_isaac.max():.2f}]")
-
-            if not args.gui and not args.headless:
-                viewer.sync()
-            elapsed = time.time() - step_start
-            if simulation_dt - elapsed > 0:
-                time.sleep(simulation_dt - elapsed)
-
-    scene.close()
+    finally:
+        if _task4 is not None:
+            _task4.close()
+        scene.close()
     print("\n[INFO] simulation finished")

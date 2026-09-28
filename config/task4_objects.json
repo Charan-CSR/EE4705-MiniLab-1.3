@@ -1,0 +1,29 @@
+{
+  "note": "Copied from Task 2 yolo_lab body XY. Evaluation only; verify if scene positions change.",
+  "objects": [
+    {
+      "class_name": "cup",
+      "color": "red",
+      "xy": [
+        2.0,
+        1.0
+      ]
+    },
+    {
+      "class_name": "cup",
+      "color": "white",
+      "xy": [
+        2.0,
+        0.0
+      ]
+    },
+    {
+      "class_name": "bowl",
+      "color": "green",
+      "xy": [
+        2.0,
+        -1.0
+      ]
+    }
+  ]
+}

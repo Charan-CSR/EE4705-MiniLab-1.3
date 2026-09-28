@@ -101,7 +101,7 @@ def make_standard_robot_cameras(
             "mode": "fixed",
             "pos": vector(front_position),
             "xyaxes": "0 -1 0 0.242536 0 0.970143",
-            "fovy": "80",
+            "fovy": "55",
         },
         {
             "name": f"{prefix}_rear_overhead_camera",

@@ -21,7 +21,7 @@
 
    <mesh name="mug_mesh"
       file="yolo_lab_assets/mug.obj"
-      scale="0.01 0.01 0.01"/>
+      scale="0.02 0.02 0.02"/>
    
    <mesh name="bowl_mesh"
       file="yolo_lab_assets/bowl.stl"/>
