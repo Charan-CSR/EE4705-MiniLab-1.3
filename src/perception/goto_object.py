@@ -1,8 +1,7 @@
 """Task 4 camera-only search/centering/approach, with separate stop evaluation.
 
-Contributor: Marie Chansuphan (A02345678). AI assistance: ChatGPT draft.
-Initial approach thresholds REQUIRE calibration before recording graded trials.
-No object world coordinates enter the steering controller.
+Contributor: Marie Chansuphan (A02345678). 
+AI assistance: drafted with ChatGPT; reviewed and tested by the contributor.
 """
 import json
 import math
