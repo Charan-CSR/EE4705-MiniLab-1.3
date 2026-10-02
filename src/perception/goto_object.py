@@ -97,7 +97,13 @@ class VisualNavigator:
         self.previous_step = now
         self.search_goals = None
         self.search_leg = 0
-        self.search_leg_time = 0.0
+        self.search_sign = 1.0
+        self.search_turn_speed = 0.45
+        self.search_progress_time = 0.0
+        self.search_progress_heading = 0.0
+        self.search_end_since = None
+        self.search_context_samples = []
+        self.search_probe_extended = False
         self.recovery_pending = False
         self.recovery = None
         self.state = 'WAIT'
@@ -135,7 +141,7 @@ class VisualNavigator:
         dt = max(0.0, now - self.previous_step)
         self.previous_step = now
         if self.state == 'SEARCH' and self.command[2] != 0 and self.recovery is None:
-            self.search_leg_time += dt
+            self.search_progress_time += dt
         if now - self.started >= self.timeout:
             return self.finish('FAIL', 'timeout')
         if (observation is None or observation.captured < self.started
@@ -151,6 +157,15 @@ class VisualNavigator:
         candidates = [d for d in observation.detections
                       if (d.class_name, d.color) == self.target]
         if not candidates:
+            # Non-target objects are search context only, never arrival targets.
+            # Require repeated fresh observations before extending a local probe.
+            context_labels = sorted({f'{d.color}_{d.class_name}' for d in observation.detections
+                                     if d.class_name in ('cup', 'bowl')
+                                     and d.color != 'unknown' and d.confidence >= 0.25})
+            if context_labels:
+                self.search_context_samples.append((observation.captured, context_labels))
+            self.search_context_samples = [s for s in self.search_context_samples
+                                           if now - s[0] <= 2.0]
             self.stable = 0
             self.command = zero
             if self.state == 'VERIFY':
@@ -165,15 +180,19 @@ class VisualNavigator:
             if self.state != 'SEARCH':
                 self.state = 'SEARCH'
                 if self.search_goals is None:
-                    # Alternate around the starting search heading, expanding
-                    # coverage. No object coordinates or color-to-turn lookup.
+                    # Short local probe, then a continuous sweep the other way.
+                    # Advance by measured yaw, never by an elapsed leg timer.
+                    self.search_sign = self.search_direction
                     self.search_goals = [self.heading + self.search_direction * math.radians(a)
-                                         for a in (35, -35, 90, -90, 180, -180)]
+                                         for a in (25, -335)]
+                self.search_progress_time = 0.0
+                self.search_progress_heading = self.heading
                 if self.recovery_pending:
                     self.recovery = (now, self.heading, self.search_direction)
                     self.recovery_pending = False
                 print(f'[SEARCH] class={self.target[0]} color={self.target[1]} '
-                      f'bidirectional leg={self.search_leg + 1}', flush=True)
+                      f'heading_sweep leg={self.search_leg + 1} '
+                      f'wz_limit={self.search_turn_speed:.2f}', flush=True)
             return self._search_command(now)
         target = max(candidates, key=lambda d: d.confidence)
         x1, y1, x2, y2 = target.bbox
@@ -226,31 +245,63 @@ class VisualNavigator:
 
     def _search_command(self, now):
         # Briefly look toward the last sighting after a detection dropout.
-        # The expanding sweep's progress survives reacquisition/dropout cycles.
+        # Sweep goals survive reacquisition/dropout cycles.
         if self.recovery is not None:
             since, heading, direction = self.recovery
             if now - since < 2.0 and direction * (self.heading - heading) < math.radians(20):
-                self.command = (0.0, 0.0, 0.35 * direction)
+                self.command = (0.0, 0.0, self.search_turn_speed * direction)
                 return self.command
             self.recovery = None
+            self.search_progress_time = 0.0
+            self.search_progress_heading = self.heading
         while self.search_leg < len(self.search_goals):
             goal = self.search_goals[self.search_leg]
-            error = goal - self.heading
-            # A slow/stalled turn must not consume the entire mission in one
-            # direction. Time caps do NOT imply the intended angle was reached.
-            limit = 4.0 if self.search_leg < 2 else 10.0
-            reached = abs(error) <= math.radians(5)
-            if reached or self.search_leg_time >= limit:
+            direction = self.search_sign if self.search_leg == 0 else -self.search_sign
+            # Directed crossing tolerates yaw overshoot without reversing back.
+            reached = direction * (self.heading - goal) >= 0.0
+            if reached:
+                recent = [s for s in self.search_context_samples if now - s[0] <= 2.0]
+                if (self.search_leg == 0 and not self.search_probe_extended
+                        and len(recent) >= 2):
+                    # Extend once from 25 to 90 degrees when the camera offers
+                    # evidence of objects. This is a heuristic, not knowledge of
+                    # the target's direction. Keep a bounded full-sweep fallback.
+                    self.search_probe_extended = True
+                    extension = self.search_sign * math.radians(65)
+                    self.search_goals = [g + extension for g in self.search_goals]
+                    self.search_progress_time = 0.0
+                    self.search_progress_heading = self.heading
+                    labels = ','.join(sorted({label for _, labels in recent for label in labels}))
+                    print(f'[SEARCH] reason=visible_object_context objects={labels} '
+                          f'probe_extended_to_deg=90', flush=True)
+                    continue
                 print(f'[SEARCH] leg={self.search_leg + 1} '
-                      f'reason={"heading_reached" if reached else "leg_time_limit"} '
+                      f'reason=heading_reached '
                       f'yaw_offset_deg={math.degrees(self.heading):.1f}', flush=True)
                 self.search_leg += 1
-                self.search_leg_time = 0.0
+                self.search_progress_time = 0.0
+                self.search_progress_heading = self.heading
                 continue
-            direction = 1.0 if error > 0 else -1.0
-            self.command = (0.0, 0.0, 0.35 * direction)
+            # Separate stalled-turn watchdog: fail rather than pretending a
+            # sweep finished. Time counts only while commanding a search turn.
+            if self.search_progress_time >= 8.0:
+                progress = direction * (self.heading - self.search_progress_heading)
+                print(f'[SEARCH] progress_deg={math.degrees(progress):.1f} '
+                      f'commanded_seconds={self.search_progress_time:.1f}', flush=True)
+                if progress < math.radians(3):
+                    return self.finish('FAIL', 'search_turn_not_progressing')
+                self.search_progress_time = 0.0
+                self.search_progress_heading = self.heading
+            self.command = (0.0, 0.0, self.search_turn_speed * direction)
             return self.command
-        return self.finish('FAIL', 'search_sweep_exhausted')
+        self.command = (0.0, 0.0, 0.0)
+        # Allow an observation captured after reaching the final heading before
+        # declaring no target. step() checks matching detections first.
+        if self.search_end_since is None:
+            self.search_end_since = now
+        elif self.last_capture > self.search_end_since:
+            return self.finish('FAIL', 'search_sweep_without_target')
+        return self.command
 
 
 class Task4Bridge:
