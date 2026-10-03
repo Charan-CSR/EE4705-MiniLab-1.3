@@ -38,6 +38,9 @@ class PerceptionWorker:
 
     def _run(self):
         try:
+            # Cap CPU threads so YOLO stays under the 0.8 s stale limit
+            import torch
+            torch.set_num_threads(4)
             from src.perception.detector import ObjectDetector
             detector = ObjectDetector()
             last = None
