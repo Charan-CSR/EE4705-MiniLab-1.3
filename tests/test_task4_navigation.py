@@ -1,3 +1,4 @@
+# Contributor: Marie Chansuphan (Task 4).
 """Pure controller checks; no YOLO, simulator, model weights, or network needed."""
 import importlib.util
 import math

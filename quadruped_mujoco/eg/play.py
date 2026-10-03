@@ -1,3 +1,4 @@
+# Contributor: Charansagar Ramanujam (Tasks 2, 3); Task 4 integration by Marie.
 if __name__ == "__main__":"""
 
 Dog Sim2Sim — IsaacGym → MuJoCo

@@ -1,6 +1,6 @@
 """Task 4 camera-only search/centering/approach, with separate stop evaluation.
 
-Contributor: Marie Chansuphan (A02345678). 
+Contributor: Marie Chansuphan (A0287345U). 
 AI assistance: drafted with ChatGPT; reviewed and tested by the contributor.
 """
 import json

@@ -1,3 +1,4 @@
+# Contributor: Marie Chansuphan (Task 4).
 """One auditable row and a few camera snapshots per Task 4 attempt."""
 import csv
 from datetime import datetime, timezone
