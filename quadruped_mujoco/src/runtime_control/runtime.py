@@ -132,9 +132,6 @@ class RuntimeControl:
         self.render_thread_started = False
         self.render_thread = None
         self.browser_render_failed = False
-        # Bumped on reset to restart the renderer
-        self.render_generation = 0
-        self.camera_checked = False
         self.browser_camera_mode = ui_cfg.get("default_camera", "tracking")
 
     def _initial_state(self):
@@ -367,24 +364,6 @@ class RuntimeControl:
         self.push_requested = False
         self.push_force.fill(0.0)
         self.push_steps_remaining = 0
-        self.restart_camera()
-
-    def restart_camera(self):
-        # Stop old render thread, next frame starts a fresh one
-        self.render_generation += 1
-        old = self.render_thread
-        if old is not None and old is not threading.current_thread():
-            old.join(timeout=2.0)
-            if old.is_alive():
-                print("[CAM] old render thread still busy, starting new one anyway")
-        # Drop the stale frame so YOLO never sees pre-reset pixels
-        with self.render_lock:
-            self.latest_front_frame = None
-        self.last_front_camera_time = 0.0
-        self.browser_render_failed = False
-        self.camera_checked = False
-        self.render_thread_started = False
-        print("[CAM] camera restarting")
 
     def _publish_frame(self, model, data):
         if self.browser_render_failed:
@@ -400,7 +379,6 @@ class RuntimeControl:
 
     def _render_loop(self, model):
         ui_cfg = self.config.get("runtime_ui", {})
-        generation = self.render_generation
         period = 1.0 / max(1.0, float(ui_cfg.get("fps", 120.0)))
         renderer = None
         try:
@@ -428,13 +406,9 @@ class RuntimeControl:
             camera.distance = float(ui_cfg.get("camera_distance", 1.7))
             camera.azimuth = float(ui_cfg.get("camera_azimuth", 135))
             camera.elevation = float(ui_cfg.get("camera_elevation", -20))
-            while self.is_running() and generation == self.render_generation:
+            while self.is_running():
                 started = time.monotonic()
-                browser_wants = self.panel.wants_frames()
-                # Front camera runs even with no browser open
-                front_due = (time.monotonic() - self.last_front_camera_time
-                             >= self.front_camera_period)
-                if browser_wants or front_due:
+                if self.panel.wants_frames():
                     with self.render_lock:
                         qpos = None if self.render_qpos is None else self.render_qpos.copy()
                         camera_mode = self.browser_camera_mode
@@ -442,26 +416,25 @@ class RuntimeControl:
                         with self.model_lock:
                             render_data.qpos[:] = qpos
                             mujoco.mj_forward(model, render_data)
-                            if browser_wants:
-                                if camera_mode == "tracking":
-                                    camera.lookat[:] = render_data.xpos[base_id]
-                                renderer.update_scene(
-                                    render_data,
-                                    camera=camera if camera_mode == "tracking" else camera_mode,
-                                )
-                                # Render the currently selected browser camera
-                                rgb = renderer.render()
+                            if camera_mode == "tracking":
+                                camera.lookat[:] = render_data.xpos[base_id]
+                            renderer.update_scene(
+                                render_data,
+                                camera=camera if camera_mode == "tracking" else camera_mode,
+                            )
+                            # Render the currently selected browser camera
+                            rgb = renderer.render()
 
-                                frame = encode_rgb_jpeg(
-                                         rgb,
-                                quality=int(ui_cfg.get("jpeg_quality", 75)),
-                                )
-                                self.panel.set_frame(frame)
+                            frame = encode_rgb_jpeg(
+                                     rgb,
+                            quality=int(ui_cfg.get("jpeg_quality", 75)),
+                            )
+                            self.panel.set_frame(frame)
 
                             # Capture the robot's front camera for perception / YOLO at 15 Hz
                             current_time = time.monotonic()
 
-                            if front_due:
+                            if current_time - self.last_front_camera_time >= self.front_camera_period:
                                   renderer.update_scene(
                                       render_data,
                                       camera="dog_front_camera",
@@ -473,22 +446,13 @@ class RuntimeControl:
 
                                   self.last_front_camera_time = current_time
 
-                                  # One-off health check after (re)start
-                                  if not self.camera_checked:
-                                      self.camera_checked = True
-                                      if front_rgb.max() > 0:
-                                          print(f"[CAM] front camera ok {front_rgb.shape[1]}x{front_rgb.shape[0]}")
-                                      else:
-                                          print("[CAM] front camera blank, press Reset Robot to retry")
-
                 remaining = period - (time.monotonic() - started)
                 if remaining > 0:
                     time.sleep(remaining)
         except Exception as exc:
-            if self.is_running() and generation == self.render_generation:
+            if self.is_running():
                 self.browser_render_failed = True
                 print(f"[UI] browser MuJoCo renderer failed: {exc}")
-                print("[CAM] press Reset Robot to restart the camera")
         finally:
             if renderer is not None:
                 renderer.close()
