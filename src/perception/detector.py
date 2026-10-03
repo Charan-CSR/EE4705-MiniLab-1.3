@@ -53,6 +53,9 @@ class ObjectDetector:
     def __init__(self, model_path='yolov8s.pt', confidence=0.25):
         self.model = YOLO(model_path)
         self.confidence = confidence
+        # GPU if present, so CPU load cannot stall YOLO
+        import torch
+        self.device = 0 if torch.cuda.is_available() else 'cpu'
 
     def detect(self, rgb_frame):
         if (not isinstance(rgb_frame, np.ndarray) or rgb_frame.dtype != np.uint8
@@ -62,7 +65,7 @@ class ObjectDetector:
         # Ultralytics expects BGR for numpy image inputs; MuJoCo supplies RGB.
         bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
         result = self.model.predict(
-            bgr, device='cpu', imgsz=960, conf=self.confidence,
+            bgr, device=self.device, imgsz=960, conf=self.confidence,
             classes=[41, 45], verbose=False,
         )[0]
         height, width = rgb_frame.shape[:2]
