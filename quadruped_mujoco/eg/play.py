@@ -812,7 +812,10 @@ if __name__ == "__main__":
     print(f"[VERIFY] expected (Isaac):   {DEFAULT_ANGLES_ISAAC}")
     print(f"[VERIFY] {'✓ match' if np.allclose(q_isaac, DEFAULT_ANGLES_ISAAC) else '✗ MISMATCH!'}")
     if not args.no_policy:
-        policy = ort.InferenceSession(policy_path, providers=['CPUExecutionProvider'])
+        # One thread: default spins ~3 cores and starves YOLO
+        policy_options = ort.SessionOptions()
+        policy_options.intra_op_num_threads = 1
+        policy = ort.InferenceSession(policy_path, policy_options, providers=['CPUExecutionProvider'])
         input_name  = policy.get_inputs()[0].name
         output_name = policy.get_outputs()[0].name
         print(f"[ONNX] {policy.get_inputs()[0].shape} → {policy.get_outputs()[0].shape}")
