@@ -116,6 +116,8 @@ Rules:
 - For goto_object, identify both object class and color when provided.
 - If essential information is missing or the request cannot be interpreted
   as a valid robot command, return a chat action explaining the problem.
+- If the command is not in English, return a chat action asking the user
+  to repeat the command in English.
 
 User command:
 {command}
@@ -198,6 +200,8 @@ Rules:
 - For goto_object, identify both object class and color when provided.
 - If essential information is missing or the request cannot be interpreted
   as a valid robot command, return a chat action explaining the problem.
+- If the command is not in English, return a chat action asking the user
+  to repeat the command in English.
 
 User command:
 {command}
