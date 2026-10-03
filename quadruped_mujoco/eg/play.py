@@ -1,13 +1,23 @@
 if __name__ == "__main__":"""
+
 Dog Sim2Sim — IsaacGym → MuJoCo
 
+
+
 Joint order:
+
   MuJoCo XML order (i.e. URDF order): FL(0-2), FR(3-5), RR(6-8), RL(9-11)
+
   IsaacGym dof order (internally reordered): FL(0-2), FR(3-5), RL(6-8), RR(9-11)
+
   → The rear legs are swapped! RL/RR remapping is required!
 
 
+
+
+
    sudo chmod 666 /dev/input/event*
+
 """
 import time
 from pathlib import Path
@@ -20,18 +30,12 @@ from collections import deque
 from queue import Queue
 import threading
 import json
-
 # Task 3: natural-language command interface
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
 from src.llm.parser import GeminiCommandParser, OllamaCommandParser
 from src.executor.executor import CommandExecutor
-
-
-
 # All in-repo resources are located relative to this file, so running does not
 # depend on the current working directory or machine-specific absolute paths.
 DEMO_DIR = Path(__file__).resolve().parent
@@ -64,18 +68,13 @@ except ModuleNotFoundError as exc:
         setup_tracking_camera,
         standard_camera_options,
     )
-
-
 DEFAULT_CONFIG = DEMO_DIR / "dog.yaml"
 DEFAULT_ONNX = DEMO_DIR / "model_3400.onnx"
 DEFAULT_ROBOT_XML = DEMO_DIR / "dog" / "xml" / "dog_terrain.xml"
 MAP_SPECS = bundled_map_specs()
-
 # compose_scene injects these under "trunk"; they move and rotate with the robot.
 ROBOT_CAMERAS = make_standard_robot_cameras(prefix="dog")
 CAMERA_OPTIONS = standard_camera_options(prefix="dog")
-
-
 # ============================================================
 #  RL/RR remapping — IsaacGym internally reorders the joints
 # ============================================================
@@ -86,10 +85,8 @@ CAMERA_OPTIONS = standard_camera_options(prefix="dog")
 #   MuJoCo 0-5  (FL,FR) -> Isaac 0-5  (FL,FR)  unchanged
 #   MuJoCo 6-8  (RR)    -> Isaac 9-11 (RR)
 #   MuJoCo 9-11 (RL)    -> Isaac 6-8  (RL)
-
 MUJOCO_TO_ISAAC = [0, 1, 2, 3, 4, 5, 9, 10, 11, 6, 7, 8]
 ISAAC_TO_MUJOCO = [0, 1, 2, 3, 4, 5, 9, 10, 11, 6, 7, 8]
-
 # Default joint angles — IsaacGym dof order: FL, FR, RL, RR
 # From dog_config.py default_joint_angles
 # FL: hip=-0.1, thigh=-0.8, calf=-1.5
@@ -102,10 +99,8 @@ DEFAULT_ANGLES_ISAAC = np.array([
      0.1, -1.0, -1.5,    # RL (Isaac dof 6-8)
     -0.1,  1.0,  1.5,    # RR (Isaac dof 9-11)
 ], dtype=np.float64)
-
 # MuJoCo order: FL, FR, RR, RL — derived from the Isaac order via the mapping
 DEFAULT_ANGLES_MUJOCO = DEFAULT_ANGLES_ISAAC[ISAAC_TO_MUJOCO]
-
 # Torque limits (from URDF actuatorfrcrange / dog.xml)
 TAU_LIMIT_HIP_THIGH = 23.7   # hip, thigh joint torque limit [Nm]
 TAU_LIMIT_CALF = 35.55        # calf joint torque limit [Nm]
@@ -127,25 +122,19 @@ class ObsHistoryBuffer:
         self.single_obs_dim = single_obs_dim
         self.total_dim = history_len * single_obs_dim
         self.buffer = np.zeros(self.total_dim, dtype=np.float32)
-
     def push(self, new_obs):
         self.buffer[self.single_obs_dim:] = self.buffer[:-self.single_obs_dim].copy()
         self.buffer[:self.single_obs_dim] = new_obs
-
     def get(self):
         return self.buffer.reshape(1, -1).copy()
-
     def reset(self):
         self.buffer[:] = 0.0
-
-
 # ============================================================
 #  Keyboard control
 #  Movement keys (W/A/S/D/Q/E): evdev press/release listener — move while held,
 #  stop on release
 #  Function keys (R/F/Z/T/Y/X): single-shot via the MuJoCo key_callback
 # ============================================================
-
 # --- evdev: optional global keyboard input on Linux; browser control does not
 # depend on it. ---
 try:
@@ -153,6 +142,7 @@ try:
 except ImportError:
     evdev = None
 import threading
+
 
 def _find_keyboards():
     """Auto-detect keyboard devices (supporting EV_KEY with letter keys)"""
@@ -171,7 +161,6 @@ def _find_keyboards():
         except Exception:
             pass
     return keyboards
-
 _pressed_keys = set() # keys currently held down (lowercase letters)
 # Autonomous motion command
 _auto_cmd = np.zeros(3, dtype=np.float32)
@@ -182,15 +171,11 @@ _turn_active = False
 _turn_target = 0.0
 # Queue of autonomous motion actions
 _motion_queue = deque()
-
-
 # Task 3: commands parsed by the LLM are passed safely
 # from the terminal thread to the MuJoCo simulation thread.
 _llm_action_queue = Queue()
 _trial_context = None
-
 _history_path = PROJECT_ROOT / "results" / "command_history.json"
-
 if _history_path.exists():
     try:
         with open(_history_path, "r", encoding="utf-8") as file:
@@ -201,71 +186,103 @@ else:
     _command_history = []
 
 
-
 def save_command_history():
     """Save command history to disk."""
-
     _history_path.parent.mkdir(parents=True, exist_ok=True)
-
     with open(_history_path, "w", encoding="utf-8") as file:
         json.dump(_command_history, file, indent=4)
 
 
+def validate_task3_actions(actions):
+    """Validate the complete LLM command before queuing any robot motion."""
+    if not isinstance(actions, list) or not actions:
+        return "empty_actions"
+    for action in actions:
+        if not isinstance(action, dict):
+            return "invalid_action_format"
+        kind = action.get("action")
+        if kind == "chat":
+            return action.get("message") or "uninterpretable_command"
+        if kind == "move":
+            required = ("vx", "vy", "wz", "duration")
+            if any(k not in action for k in required):
+                return "missing_move_parameters"
+            try:
+                if any(not -1.0 <= float(action[k]) <= 1.0 for k in required[:3]):
+                    return "velocity_out_of_range"
+                if not 0 < float(action["duration"]) < float("inf"):
+                    return "invalid_move_duration"
+            except (TypeError, ValueError, OverflowError):
+                return "invalid_move_parameters"
+        elif kind == "turn":
+            try:
+                if not -float("inf") < float(action["angle_deg"]) < float("inf"):
+                    return "invalid_turn_angle"
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return "missing_or_invalid_turn_angle"
+        elif kind == "goto_object":
+            if not action.get("class_name") or not action.get("color"):
+                return "missing_object_class_or_color"
+            if _task4 is None:
+                return "restart_with_--task4"
+        elif kind != "stop":
+            return "unsupported_action"
+    return None
 
+
+def format_task3_actions(actions):
+    """Create a concise, ordered command summary for the assignment log."""
+    return ", ".join(
+        f"{a['action']}(" + ", ".join(
+            f"{k}={v}" for k, v in a.items()
+            if k != "action" and not k.startswith("_")
+        ) + ")" for a in actions
+    )
 
 
 def command_input_loop():
     """Read English commands and parse them without blocking MuJoCo."""
-
     print("\nSelect LLM provider:")
     print("1 - Gemini")
     print("2 - Ollama (Qwen3 4B)")
-
     while True:
         choice = input("Enter choice [1/2]: ").strip()
-
         if choice == "1":
             llm_parser = GeminiCommandParser()
             provider_name = "Gemini"
             break
-
         elif choice == "2":
             llm_parser = OllamaCommandParser()
             provider_name = "Ollama (Qwen3 4B)"
             break
-
         else:
             print("[LLM] Invalid choice. Enter 1 or 2.")
-
     print(f"\n[LLM] Natural-language control ready ({provider_name}).")
     print("[LLM] Type a command and press ENTER.\n")
-
-
     while True:
         try:
             command = input("> ").strip()
-
             if not command:
                 continue
-
-            print(f"[CMD] {command}")
-
             start_time = time.perf_counter()
-
             actions = llm_parser.parse(command)
-
             latency = time.perf_counter() - start_time
-
+            reason = validate_task3_actions(actions)
+            if reason is not None:
+                print(f"[CMD] rejected reason={reason}")
+                print(f"[LATENCY] {latency:.3f} s")
+                _command_history.append({"command": command, "actions": actions,
+                                         "rejected_reason": reason})
+                save_command_history()
+                continue
+            print(f"[CMD] actions={format_task3_actions(actions)} n={len(actions)}")
             _command_history.append({
                 "command": command,
                 "actions": actions,
             })
-
             save_command_history()
-
             print(f"[LATENCY] {latency:.3f} s")
             print(f"[PARSED] {actions}")
-
             if _task4 is not None:
                 for action in actions:
                     if action.get('action') == 'goto_object':
@@ -273,17 +290,13 @@ def command_input_loop():
                             'command': command, 'provider': provider_name,
                             'parse_latency_s': round(latency, 3),
                         }
-
             _llm_action_queue.put(actions)
-
         except EOFError:
             break
-
         except Exception as exc:
+            print(f"[CMD] rejected reason=parser_error:{type(exc).__name__}")
             print(f"[LLM ERROR] Command could not be parsed: {exc}")
             print("[LLM] Please try the command again.")
-
-
 # Direction key mapping: evdev scancode → direction letter
 _DIR_SCANCODES = {} if evdev is None else {
     evdev.ecodes.KEY_W: 'w', evdev.ecodes.KEY_S: 's',
@@ -292,6 +305,7 @@ _DIR_SCANCODES = {} if evdev is None else {
     evdev.ecodes.KEY_UP: 'w', evdev.ecodes.KEY_DOWN: 's',
     evdev.ecodes.KEY_LEFT: 'a', evdev.ecodes.KEY_RIGHT: 'd',
 }
+
 
 def _evdev_keyboard_thread(dev):
     """Background thread: read evdev keyboard events"""
@@ -308,10 +322,8 @@ def _evdev_keyboard_thread(dev):
                         _pressed_keys.discard(d)
     except Exception as e:
         print(f"[KEYBOARD] evdev device read error: {e}")
-
 # Start the evdev keyboard listeners
 _kb_devs = _find_keyboards()
-
 if not _kb_devs and evdev is not None:
     # If permissions are missing, try opening a known keyboard device directly
     import glob, os
@@ -341,24 +353,20 @@ if not _kb_devs and evdev is not None:
             print(f"{'='*60}\n")
         except Exception:
             pass
-
 for _dev in _kb_devs:
     _t = threading.Thread(target=_evdev_keyboard_thread, args=(_dev,), daemon=True)
     _t.start()
-
 if _kb_devs:
     print(f"[KEYBOARD] evdev: listening on {len(_kb_devs)} keyboard device(s)")
     for _dev in _kb_devs:
         print(f"  - {_dev.path}: {_dev.name}")
 elif evdev is None:
     print("[KEYBOARD] evdev not installed; browser keyboard control is available")
-
 # --- MuJoCo key_callback: function keys ---
 GLFW_KEY_R = 82;  GLFW_KEY_F = 70
 GLFW_KEY_Z = 90;  GLFW_KEY_T = 84
 GLFW_KEY_Y = 89;  GLFW_KEY_X = 88
 GLFW_KEY_SPACE = 32
-
 # Global state
 _task4 = None  # Task 4 bridge is enabled explicitly by a CLI flag.
 height_cmd = 0.25
@@ -384,7 +392,6 @@ def key_callback(keycode):
         _pressed_keys.clear()
     elif keycode == GLFW_KEY_SPACE and "runtime" in globals():
         runtime.request_push()
-
     # Keep the native viewer shortcuts in sync with the browser panel;
     # otherwise the panel value overwrites them on the next simulation step.
     if "runtime" in globals():
@@ -394,15 +401,14 @@ def key_callback(keycode):
         elif keycode == GLFW_KEY_X:
             runtime.sync_stop_to_panel()
 
+
 def get_yaw(mj_data):
     """Return robot yaw angle in radians from MuJoCo quaternion."""
     w, x, y, z = mj_data.qpos[3:7]
-
     yaw = np.arctan2(
         2.0 * (w * z + x * y),
         1.0 - 2.0 * (y * y + z * z)
     )
-
     return yaw
 
 
@@ -417,7 +423,6 @@ def turn(angle_deg):
         "type": "turn",
         "angle_deg": float(angle_deg),
     })
-
     print(f"[QUEUE] turn({angle_deg:.1f} deg)")
 
 
@@ -430,36 +435,35 @@ def move(vx, vy, wz, duration):
         "wz": float(wz),
         "duration": float(duration),
     })
-
     print(
         f"[QUEUE] move(vx={vx:.2f}, vy={vy:.2f}, "
         f"wz={wz:.2f}, duration={duration:.2f}s)"
     )
 
 
-
-
 def start_next_action(mj_data):
     """Start the next queued motion action if the robot is idle."""
     global _auto_cmd, _auto_cmd_end_time, _auto_cmd_active
     global _turn_active, _turn_target
-
     # Current action still running
     if _auto_cmd_active or _turn_active or (_task4 is not None and _task4.busy):
         return
-
     # Nothing waiting
     if not _motion_queue:
         return
-
     action = _motion_queue.popleft()
+    # A completion marker follows the last queued action of an LLM command.
+    # Reaching it means prior movements/turns really finished, not just queued.
+    if action["type"] == "command_done":
+        elapsed = time.monotonic() - action["started_at"]
+        print(f"[DONE] actions={action['count']} t={elapsed:.2f} s")
+        return
     if _task4 is not None and action["type"] != "goto_object":
         _task4.release()
     if action["type"] == "goto_object":
         _task4.start(action["class_name"], action["color"], get_yaw(mj_data),
                      context=action.get('context'))
         return
-
     # Start MOVE
     if action["type"] == "move":
         _auto_cmd = np.array([
@@ -467,40 +471,31 @@ def start_next_action(mj_data):
             action["vy"],
             action["wz"],
         ], dtype=np.float32)
-
         _auto_cmd_end_time = time.time() + action["duration"]
         _auto_cmd_active = True
-
         print(
             f"[EXEC] move vx={action['vx']:.2f}, "
             f"vy={action['vy']:.2f}, "
             f"wz={action['wz']:.2f}, "
             f"duration={action['duration']:.2f}s"
         )
-
     # Start TURN
     elif action["type"] == "turn":
         current_yaw = get_yaw(mj_data)
-
         _turn_target = wrap_angle(
             current_yaw + np.deg2rad(action["angle_deg"])
         )
-
         _turn_active = True
-
         print(
             f"[EXEC] turn {action['angle_deg']:.1f} deg, "
             f"target={np.rad2deg(_turn_target):.1f} deg"
         )
 
 
-
-
 def stop():
     """Stop the current autonomous action and clear all queued actions."""
     global _auto_cmd, _auto_cmd_active
     global _turn_active
-
     _motion_queue.clear()
     while not _llm_action_queue.empty():
         _llm_action_queue.get_nowait()
@@ -509,11 +504,9 @@ def stop():
     if "runtime" in globals():
         runtime.sync_stop_to_panel()
     _pressed_keys.clear()
-
     _auto_cmd = np.zeros(3, dtype=np.float32)
     _auto_cmd_active = False
     _turn_active = False
-
     print("[DONE] stop")
 
 
@@ -542,8 +535,6 @@ def task4_test_input_loop():
             _llm_action_queue.put([{"action": "goto_object", "class_name": words[1], "color": words[2]}])
         else:
             print("[CMD] rejected reason=use_exact_test_syntax")
-
-
 # Task 3 executor connected to Task 2 motion skills
 command_executor = CommandExecutor(
     move_fn=move,
@@ -553,54 +544,47 @@ command_executor = CommandExecutor(
 )
 
 
-
-
-
 def get_commands():
     """Return autonomous command if active; otherwise use keyboard."""
     global _auto_cmd_active
-
     # Autonomous motion currently running
     if _auto_cmd_active:
         if time.time() < _auto_cmd_end_time:
             return _auto_cmd.copy()
-
         # Duration has expired -> stop autonomous motion
         _auto_cmd_active = False
         print("[DONE] move")
         return np.zeros(3, dtype=np.float32)
-
     # Normal keyboard control
     vx = (1.0 if 'w' in _pressed_keys else
           -1.0 if 's' in _pressed_keys else 0.0)
-
     vy = (1.0 if 'a' in _pressed_keys else
           -1.0 if 'd' in _pressed_keys else 0.0)
-
     wz = (1.0 if 'q' in _pressed_keys else
           -1.0 if 'e' in _pressed_keys else 0.0)
-
     return np.array([vx, vy, wz], dtype=np.float32)
+
 
 def build_single_obs(quat_xyzw, omega, joint_q_isaac, joint_dq_isaac,
                      last_action_isaac, default_angles_isaac,
                      cmd, cmd_scale, ang_vel_scale, dof_pos_scale, dof_vel_scale,
                      clip_obs, height_cmd=0.25):
     """
+
     Build the 46-dim single-step observation — all joint quantities use the
+
     IsaacGym dof order: FL, FR, RL, RR
+
     Dim 46: height command (height_cmd - 0.25) / 0.1
+
     """
     obs = np.zeros(46, dtype=np.float32)
     obs[0:3] = cmd * cmd_scale[:3]
-
     omega_body = omega  # MuJoCo free-joint angular qvel is already in the local body frame
     obs[3:6] = omega_body.astype(np.float32) * ang_vel_scale
-
     gravity_world = np.array([0., 0., -1.], dtype=np.float64)
     proj_gravity = quat_rotate_inverse(quat_xyzw, gravity_world)
     obs[6:9] = proj_gravity.astype(np.float32)
-
     obs[9:21] = ((joint_q_isaac - default_angles_isaac) * dof_pos_scale).astype(np.float32)
     obs[21:33] = (joint_dq_isaac * dof_vel_scale).astype(np.float32)
     obs[33:45] = last_action_isaac
@@ -689,7 +673,6 @@ def build_runtime_config(args, kps, kds):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-
     parser.add_argument(
         "--onnx",
         type=Path,
@@ -732,7 +715,6 @@ if __name__ == "__main__":
         parser.error("--gui and --headless cannot be used together")
     if args.duration is not None and args.duration <= 0:
         parser.error("--duration must be greater than 0")
-
     config_path = DEFAULT_CONFIG
     policy_path = (
         None if args.no_policy else str(args.onnx.expanduser().resolve())
@@ -741,7 +723,6 @@ if __name__ == "__main__":
         raise FileNotFoundError(f"ONNX model not found: {policy_path}")
     with config_path.open("r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
-
     simulation_duration = (
         args.duration
         if args.duration is not None else config["simulation_duration"]
@@ -757,7 +738,6 @@ if __name__ == "__main__":
     cmd_scale      = np.array(config["cmd_scale"], dtype=np.float32)
     clip_obs       = config.get("clip_obs", 100.0)
     runtime_config = build_runtime_config(args, kps, kds)
-
     # Torque limits: hip/thigh=23.7, calf=35.55 (MuJoCo order)
     tau_limits_mujoco = np.array([
         TAU_LIMIT_HIP_THIGH, TAU_LIMIT_HIP_THIGH, TAU_LIMIT_CALF,
@@ -765,11 +745,9 @@ if __name__ == "__main__":
         TAU_LIMIT_HIP_THIGH, TAU_LIMIT_HIP_THIGH, TAU_LIMIT_CALF,
         TAU_LIMIT_HIP_THIGH, TAU_LIMIT_HIP_THIGH, TAU_LIMIT_CALF,
     ])
-
     NUM_ONE_STEP_OBS = 46
     HISTORY_LEN      = 6
     NUM_ACTIONS      = 12
-
     print(f"\n{'='*60}")
     print(f"[CONFIG] Dog — with RL/RR remapping")
     print(f"{'='*60}")
@@ -781,7 +759,6 @@ if __name__ == "__main__":
     print(f"  kps={kps[0]}, kds={kds[0]}, action_scale={action_scale}")
     print(f"  tau_limits: hip/thigh={TAU_LIMIT_HIP_THIGH}, calf={TAU_LIMIT_CALF}")
     print(f"{'='*60}")
-
     # RuntimeScene owns the temporary MJCF, model, data and browser runtime.
     scene = RuntimeScene(
         robot_xml=DEFAULT_ROBOT_XML,
@@ -815,12 +792,10 @@ if __name__ == "__main__":
                 stop()
             return actions
         runtime.panel.consume_actions = task4_consume_actions
-
     print(f"\n[VERIFY] MuJoCo joint order:")
     for i in range(mj_model.njnt):
         jn = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_JOINT, i)
         if jn: print(f"  [{i}] {jn}")
-
     reset_robot(
         mj_model,
         mj_data,
@@ -828,19 +803,16 @@ if __name__ == "__main__":
         runtime_config["simulation"]["initial_position"],
         runtime_config["simulation"]["initial_quaternion"],
     )
-
     # Verify: MuJoCo qpos converted to Isaac order should equal DEFAULT_ANGLES_ISAAC
     q_isaac = mj_data.qpos[7:19][MUJOCO_TO_ISAAC]
     print(f"\n[VERIFY] qpos(MuJoCo→Isaac): {q_isaac}")
     print(f"[VERIFY] expected (Isaac):   {DEFAULT_ANGLES_ISAAC}")
     print(f"[VERIFY] {'✓ match' if np.allclose(q_isaac, DEFAULT_ANGLES_ISAAC) else '✗ MISMATCH!'}")
-
     if not args.no_policy:
         policy = ort.InferenceSession(policy_path, providers=['CPUExecutionProvider'])
         input_name  = policy.get_inputs()[0].name
         output_name = policy.get_outputs()[0].name
         print(f"[ONNX] {policy.get_inputs()[0].shape} → {policy.get_outputs()[0].shape}")
-
     obs_history      = ObsHistoryBuffer(HISTORY_LEN, NUM_ONE_STEP_OBS)
     target_q_mujoco  = DEFAULT_ANGLES_MUJOCO.copy()
     action_isaac     = np.zeros(NUM_ACTIONS, dtype=np.float64)
@@ -864,14 +836,12 @@ if __name__ == "__main__":
             height_cmd=0.25
         )
         obs_history.push(obs)
-
     print(f"[INFO] warm-up done, norm={np.linalg.norm(obs_history.buffer):.4f}")
     print(f"\n  W/S:forward/back A/D:strafe Q/E:turn X:emergency stop"
           f" T:reset Y:print model output")
     print(f"  R:crouch↓ F:stand↑ Z:reset height (default 0.25m)")
     print(f"  [hold to move, release to stop] global evdev listener,"
           f" works on Wayland/X11\n")
-
     display = scene.viewer(
         args.gui or args.headless,
         key_callback=key_callback,
@@ -889,16 +859,12 @@ if __name__ == "__main__":
                     azimuth=135.0,
                     elevation=-25.0,
                 )
-
             command_thread = threading.Thread(
              target=task4_test_input_loop if args.task4_test else command_input_loop,
              daemon=True,
             )
             command_thread.start()
-   
-
             # Temporary autonomous movement test
-
             start = time.time()
             while viewer.is_running() and time.time() - start < simulation_duration:
                             # Task 3: execute any commands returned by the LLM thread
@@ -906,14 +872,26 @@ if __name__ == "__main__":
                     actions = _llm_action_queue.get()
                     _trial_context = next((action.get('_trial_context') for action in actions
                                            if action.get('action') == 'goto_object'), None)
+                    # Start timing at dispatch, then wait for queued motion to
+                    # complete before printing the aggregate Task 3 [DONE] log.
+                    command_started_at = time.monotonic()
                     try:
                         command_executor.execute(actions)
+                        action_kinds = [a.get("action") for a in actions]
+                        if action_kinds == ["stop"] and not args.task4_test:
+                            # Stop is synchronous and clears the motion queue.
+                            print(f"[DONE] actions=1 t={time.monotonic() - command_started_at:.2f} s")
+                        elif "stop" not in action_kinds and not args.task4_test:
+                            _motion_queue.append({
+                                "type": "command_done",
+                                "count": len(actions),
+                                "started_at": command_started_at,
+                            })
+                        # Mixed commands containing stop cancel other queued
+                        # work; reporting all steps done would be misleading.
                     finally:
                         _trial_context = None
-
-
                 step_start = time.time()
-
                 # The browser and the physical keyboard both update the motion
                 # command. Without --gui the original keyboard logic is kept.
                 # Autonomous commands take priority over manual controls
@@ -927,37 +905,28 @@ if __name__ == "__main__":
                 elif _turn_active:
                     current_yaw = get_yaw(mj_data)
                     yaw_error = wrap_angle(_turn_target - current_yaw)
-
-
-
                     # Stop when within 2 degrees
                     if abs(yaw_error) < np.deg2rad(2.0):
                         _turn_active = False
                         cmd = np.zeros(3, dtype=np.float32)
-
                         print(
                          f"[TURN] target={np.rad2deg(_turn_target):.1f} deg, "
                          f"final_error={np.rad2deg(yaw_error):.2f} deg"
                         )
                         print("[DONE] turn")
-
-
                     else:
                         # Proportional closed-loop turning
                         wz_cmd = np.clip(1.5 * yaw_error, -0.6, 0.6)
                         # Keep enough yaw command to overcome the policy's turning dead zone
                         if abs(wz_cmd) < 0.30:
                          wz_cmd = np.sign(yaw_error) * 0.30
-
                         cmd = np.array(
                             [0.0, 0.0, wz_cmd],
                             dtype=np.float32
                         )
-
                 # Timed autonomous movement
                 elif _auto_cmd_active:
                     cmd = get_commands()
-
                 # Browser/manual controls
                 else:
                     cmd = np.array([
@@ -966,13 +935,9 @@ if __name__ == "__main__":
                         runtime_config["command"]["yaw"],
                     ], dtype=np.float32)
                     height_cmd = runtime_config["command"]["height"]
-
-
                 runtime_state = runtime.runtime_control(mj_model, mj_data)
-
                 if runtime.consume_reset():
                     reset_flag = True
-
                 if reset_flag:
                     if _task4 is not None:
                         _task4.cancel("reset_or_map_change")
@@ -996,25 +961,17 @@ if __name__ == "__main__":
                     _auto_cmd[:] = 0.0
                     _auto_cmd_active = False
                     _turn_active = False
-
-
                     reset_flag = False
-
-
                 start_next_action(mj_data)
-
                 # Read the MuJoCo state
                 joint_q_mujoco  = mj_data.qpos[7:19].astype(np.float64)
                 joint_dq_mujoco = mj_data.qvel[6:18].astype(np.float64)
-
                 # ★ Remap to IsaacGym order (fed to the policy)
                 joint_q_isaac  = joint_q_mujoco[MUJOCO_TO_ISAAC]
                 joint_dq_isaac = joint_dq_mujoco[MUJOCO_TO_ISAAC]
-
                 quat_wxyz = mj_data.qpos[3:7]
                 quat_xyzw = np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]])
                 omega = mj_data.qvel[3:6].astype(np.float64)
-
                 if count % control_decimation == 0:
                     if not args.no_policy:
                         single_obs = build_single_obs(
@@ -1026,7 +983,6 @@ if __name__ == "__main__":
                         )
                         obs_history.push(single_obs)
                         obs_input = obs_history.get()
-
                         if args.verbose_inference and inference_count < 10:
                             print(f"\n{'='*60}")
                             print(f"[inference #{inference_count}] full 276-dim history obs"
@@ -1048,25 +1004,20 @@ if __name__ == "__main__":
                                 print(f"\n[INFO] first 10 obs frames printed;"
                                       f" press Y to start printing model output.")
                             print(f"{'='*60}")
-
                         action_raw = policy.run([output_name], {input_name: obs_input})[0][0]
                         action_isaac[:] = np.clip(action_raw, -10.0, 10.0)
                         last_action_isaac = action_isaac.astype(np.float32)
-
                         if inference_count >= 10 and print_action_flag:
                             print(f"\n[inference #{inference_count}] model output action x"
                                   f" {OUTPUT_PRINT_SCALE} (Isaac order FL,FR,RL,RR):")
                             for j in range(12):
                                 print(f"    {labels[j]:12s}: action={action_isaac[j] * OUTPUT_PRINT_SCALE:+.4f}")
-
                         inference_count += 1
-
                         # ★ Target angles: IsaacGym order → MuJoCo order
                         target_q_isaac = action_isaac * action_scale + DEFAULT_ANGLES_ISAAC
                         target_q_mujoco = target_q_isaac[ISAAC_TO_MUJOCO]
                     else:
                         target_q_mujoco = DEFAULT_ANGLES_MUJOCO.copy()
-
                 # PD control (MuJoCo order). Live Kp/Kd, motor strength, delay and
                 # torque limits all take effect right before writing data.ctrl.
                 applied_target_q = motor_delay.apply(
@@ -1087,11 +1038,9 @@ if __name__ == "__main__":
                     torque_limit=effective_tau_limits,
                 )
                 mj_data.ctrl[:NUM_ACTIONS] = tau
-
                 runtime.apply_external_forces(mj_model, mj_data)
                 mujoco.mj_step(mj_model, mj_data)
                 count += 1
-
                 if False and count % (control_decimation * 50) == 0:
                     grav = quat_rotate_inverse(quat_xyzw, np.array([0., 0., -1.]))
                     h = mj_data.qpos[2]
@@ -1099,12 +1048,10 @@ if __name__ == "__main__":
                           f"vx={mj_data.qvel[0]:.2f} vy={mj_data.qvel[1]:.2f} wz={mj_data.qvel[5]:.2f} "
                           f"grav_z={grav[2]:.3f} "
                           f"act=[{action_isaac.min():.2f},{action_isaac.max():.2f}]")
-
                 if not args.gui and not args.headless:
                     viewer.sync()
                 elapsed = time.time() - step_start
                 time.sleep(max(0.001, simulation_dt - elapsed))
-
     finally:
         if _task4 is not None:
             _task4.close()
