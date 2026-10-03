@@ -117,6 +117,8 @@ class VisualNavigator:
         self.stop_since = None
         self.stop_capture = None
         self.verification = None
+        self.approach_best = 0.0
+        self.approach_since = now
         print(f'[EXEC] goto_object class={class_name} color={color} '
               f'mode={"align_only" if self.align_only else "approach"}', flush=True)
 
@@ -239,6 +241,16 @@ class VisualNavigator:
             self.state = 'VERIFY'
             self.stop_since = now
             print('[STOP] reason=visual_size_threshold; checking fresh detection', flush=True)
+            return zero
+        # Stalled near target (e.g. at table edge): stop, then verify distance
+        if self.state != 'APPROACH' or fraction > self.approach_best + 0.01:
+            self.approach_best = fraction
+            self.approach_since = now
+        elif fraction >= threshold * 0.85 and now - self.approach_since > 3:
+            self.state = 'VERIFY'
+            self.stop_since = now
+            print(f'[STOP] reason=approach_stalled height_fraction={fraction:.3f}; '
+                  f'checking fresh detection', flush=True)
             return zero
         self.state = 'APPROACH'
         # Slow forward command; no forward motion while substantially misaligned.
