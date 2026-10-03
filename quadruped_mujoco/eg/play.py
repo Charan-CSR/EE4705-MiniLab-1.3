@@ -780,6 +780,7 @@ if __name__ == "__main__":
     motor_delay = MotorCommandDelay(simulation_dt)
     if args.task4 or args.task4_test:
         from src.perception.goto_object import Task4Bridge
+        runtime.front_camera_always = True  # YOLO frames even with browser hidden
         for field in ("latest_front_frame", "last_front_camera_time", "render_lock"):
             if not hasattr(runtime, field):
                 raise RuntimeError(f"Task 2 runtime missing {field}; use the handover version")

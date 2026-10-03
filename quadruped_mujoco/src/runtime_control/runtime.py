@@ -129,6 +129,7 @@ class RuntimeControl:
         self.front_camera_fps = 15.0
         self.front_camera_period = 1.0 / self.front_camera_fps
         self.last_front_camera_time = 0.0
+        self.front_camera_always = False  # set by Task 4 so YOLO never starves
         self.render_thread_started = False
         self.render_thread = None
         self.browser_render_failed = False
@@ -408,7 +409,9 @@ class RuntimeControl:
             camera.elevation = float(ui_cfg.get("camera_elevation", -20))
             while self.is_running():
                 started = time.monotonic()
-                if self.panel.wants_frames():
+                # Keep the front camera alive for YOLO even without a browser viewer
+                wants_view = self.panel.wants_frames()
+                if wants_view or self.front_camera_always:
                     with self.render_lock:
                         qpos = None if self.render_qpos is None else self.render_qpos.copy()
                         camera_mode = self.browser_camera_mode
@@ -416,35 +419,32 @@ class RuntimeControl:
                         with self.model_lock:
                             render_data.qpos[:] = qpos
                             mujoco.mj_forward(model, render_data)
-                            if camera_mode == "tracking":
-                                camera.lookat[:] = render_data.xpos[base_id]
-                            renderer.update_scene(
-                                render_data,
-                                camera=camera if camera_mode == "tracking" else camera_mode,
-                            )
-                            # Render the currently selected browser camera
-                            rgb = renderer.render()
-
-                            frame = encode_rgb_jpeg(
-                                     rgb,
-                            quality=int(ui_cfg.get("jpeg_quality", 75)),
-                            )
-                            self.panel.set_frame(frame)
+                            if wants_view:
+                                if camera_mode == "tracking":
+                                    camera.lookat[:] = render_data.xpos[base_id]
+                                renderer.update_scene(
+                                    render_data,
+                                    camera=camera if camera_mode == "tracking" else camera_mode,
+                                )
+                                # Render the currently selected browser camera
+                                rgb = renderer.render()
+                                frame = encode_rgb_jpeg(
+                                    rgb,
+                                    quality=int(ui_cfg.get("jpeg_quality", 75)),
+                                )
+                                self.panel.set_frame(frame)
 
                             # Capture the robot's front camera for perception / YOLO at 15 Hz
                             current_time = time.monotonic()
-
                             if current_time - self.last_front_camera_time >= self.front_camera_period:
-                                  renderer.update_scene(
-                                      render_data,
-                                      camera="dog_front_camera",
-                                  )
-                                  front_rgb = renderer.render()
-
-                                  with self.render_lock:
-                                   self.latest_front_frame = front_rgb.copy()
-
-                                  self.last_front_camera_time = current_time
+                                renderer.update_scene(
+                                    render_data,
+                                    camera="dog_front_camera",
+                                )
+                                front_rgb = renderer.render()
+                                with self.render_lock:
+                                    self.latest_front_frame = front_rgb.copy()
+                                self.last_front_camera_time = current_time
 
                 remaining = period - (time.monotonic() - started)
                 if remaining > 0:
