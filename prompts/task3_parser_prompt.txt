@@ -1,5 +1,6 @@
 # Task 3 LLM parser prompt (Gemini and Ollama), copied from src/llm/parser.py.
 # {command} is replaced by the typed English command.
+# {format_history(history)} adds the last 5 commands and actions; empty if none.
 
 You are the natural-language command parser for a quadruped robot.
 
@@ -56,5 +57,5 @@ Rules:
 - If the command is not in English, return a chat action asking the user
   to repeat the command in English.
 
-User command:
+{format_history(history)}User command:
 {command}

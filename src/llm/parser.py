@@ -49,6 +49,28 @@ class RobotCommand(BaseModel):
     actions: list[RobotAction] = Field(min_length=1)
 
 
+def format_history(history):
+    """Recent commands as prompt text; empty string if no history."""
+    if not history:
+        return ""
+    lines = []
+    for entry in history:
+        # Drop internal keys such as _trial_context
+        actions = [
+            {k: v for k, v in a.items() if not k.startswith("_")}
+            for a in entry.get("actions") or []
+            if isinstance(a, dict)
+        ]
+        status = "rejected" if "rejected_reason" in entry else "accepted"
+        lines.append(f"- {entry.get('command')!r} -> {status}, actions={actions}")
+    return (
+        "Previous commands, oldest first, with their parsed actions:\n"
+        + "\n".join(lines)
+        + "\nIf the user refers to an earlier command (e.g. \"do that again\"),\n"
+        "reuse its actions and parameters, changed only as the user asks.\n\n"
+    )
+
+
 class GeminiCommandParser:
     """Convert natural-language commands into structured robot actions."""
 
@@ -60,7 +82,7 @@ class GeminiCommandParser:
 
         self.client = genai.Client(api_key=api_key)
 
-    def parse(self, command):
+    def parse(self, command, history=None):
         """Convert an English command into validated robot actions."""
 
         prompt = f"""
@@ -119,7 +141,7 @@ Rules:
 - If the command is not in English, return a chat action asking the user
   to repeat the command in English.
 
-User command:
+{format_history(history)}User command:
 {command}
 """
 
@@ -146,7 +168,7 @@ class OllamaCommandParser:
     def __init__(self):
         self.model = "qwen3:4b"
 
-    def parse(self, command):
+    def parse(self, command, history=None):
         prompt = f"""
 You are the natural-language command parser for a quadruped robot.
 
@@ -203,7 +225,7 @@ Rules:
 - If the command is not in English, return a chat action asking the user
   to repeat the command in English.
 
-User command:
+{format_history(history)}User command:
 {command}
 """
 

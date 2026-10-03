@@ -266,7 +266,7 @@ def command_input_loop():
             if not command:
                 continue
             start_time = time.perf_counter()
-            actions = llm_parser.parse(command)
+            actions = llm_parser.parse(command, _command_history[-5:])
             latency = time.perf_counter() - start_time
             reason = validate_task3_actions(actions)
             if reason is not None:
