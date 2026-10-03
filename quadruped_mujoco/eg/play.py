@@ -185,6 +185,8 @@ if _history_path.exists():
         _command_history = []
 else:
     _command_history = []
+# History from earlier runs is kept on disk but not sent to the LLM
+_session_start = len(_command_history)
 
 
 def save_command_history():
@@ -266,7 +268,7 @@ def command_input_loop():
             if not command:
                 continue
             start_time = time.perf_counter()
-            actions = llm_parser.parse(command, _command_history[-5:])
+            actions = llm_parser.parse(command, _command_history[_session_start:][-5:])
             latency = time.perf_counter() - start_time
             reason = validate_task3_actions(actions)
             if reason is not None:
