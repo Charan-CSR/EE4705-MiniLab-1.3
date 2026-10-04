@@ -1,3 +1,4 @@
+# Contributor: Charansagar Ramanujam (Tasks 2, 3); Task 4 integration by Marie.
 if __name__ == "__main__":"""
 
 Dog Sim2Sim — IsaacGym → MuJoCo
@@ -184,6 +185,8 @@ if _history_path.exists():
         _command_history = []
 else:
     _command_history = []
+# History from earlier runs is kept on disk but not sent to the LLM
+_session_start = len(_command_history)
 
 
 def save_command_history():
@@ -265,7 +268,7 @@ def command_input_loop():
             if not command:
                 continue
             start_time = time.perf_counter()
-            actions = llm_parser.parse(command)
+            actions = llm_parser.parse(command, _command_history[_session_start:][-5:])
             latency = time.perf_counter() - start_time
             reason = validate_task3_actions(actions)
             if reason is not None:
@@ -777,6 +780,7 @@ if __name__ == "__main__":
     motor_delay = MotorCommandDelay(simulation_dt)
     if args.task4 or args.task4_test:
         from src.perception.goto_object import Task4Bridge
+        runtime.front_camera_always = True  # YOLO frames even with browser hidden
         for field in ("latest_front_frame", "last_front_camera_time", "render_lock"):
             if not hasattr(runtime, field):
                 raise RuntimeError(f"Task 2 runtime missing {field}; use the handover version")
@@ -809,7 +813,10 @@ if __name__ == "__main__":
     print(f"[VERIFY] expected (Isaac):   {DEFAULT_ANGLES_ISAAC}")
     print(f"[VERIFY] {'✓ match' if np.allclose(q_isaac, DEFAULT_ANGLES_ISAAC) else '✗ MISMATCH!'}")
     if not args.no_policy:
-        policy = ort.InferenceSession(policy_path, providers=['CPUExecutionProvider'])
+        # One thread: default spins ~3 cores and starves YOLO
+        policy_options = ort.SessionOptions()
+        policy_options.intra_op_num_threads = 1
+        policy = ort.InferenceSession(policy_path, policy_options, providers=['CPUExecutionProvider'])
         input_name  = policy.get_inputs()[0].name
         output_name = policy.get_outputs()[0].name
         print(f"[ONNX] {policy.get_inputs()[0].shape} → {policy.get_outputs()[0].shape}")

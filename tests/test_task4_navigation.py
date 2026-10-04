@@ -1,3 +1,4 @@
+# Contributor: Marie Chansuphan (Task 4).
 """Pure controller checks; no YOLO, simulator, model weights, or network needed."""
 import importlib.util
 import math
@@ -43,10 +44,14 @@ class NavigationTests(unittest.TestCase):
     def test_wrong_color_searches_and_full_turn_fails(self):
         nav = self.start()
         nav.step(.1, 0, observation(.1, (290, 100, 350, 160), 'white'))
-        self.assertGreater(nav.step(.7, 0, observation(.7))[2], 0)
-        for i in range(1, 66):
-            yaw = (i*.1 + math.pi) % (2*math.pi) - math.pi
-            nav.step(.7+i*.1, yaw, observation(.7+i*.1))
+        cmd = nav.step(.7, 0, observation(.7))
+        self.assertGreater(cmd[2], 0)
+        yaw = 0.0
+        for i in range(1, 121):
+            # Turn the way the controller commands: probe left, then sweep right
+            if cmd[2]:
+                yaw = (yaw + math.copysign(.1, cmd[2]) + math.pi) % (2*math.pi) - math.pi
+            cmd = nav.step(.7+i*.1, yaw, observation(.7+i*.1))
         self.assertEqual(nav.outcome, 'FAIL')
         self.assertFalse(nav.active)
 

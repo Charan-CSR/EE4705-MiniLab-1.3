@@ -5,3 +5,7 @@ pyyaml
 pillow
 ultralytics
 openai
+google-genai
+ollama
+python-dotenv
+pydantic

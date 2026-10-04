@@ -1,0 +1,11 @@
+method,commanded_deg,measured_turn_deg,abs_error_deg,source
+open_loop wz=0.6 1.5s,45,34.4,10.6,play_openloop.py --headless
+open_loop wz=0.6 3.0s,90,56.6,33.4,play_openloop.py --headless
+open_loop wz=0.6 6.0s,180,99.0,81.0,play_openloop.py --headless
+closed_loop turn(),90,88.0,1.99,play.py [TURN] log 2026-10-03
+closed_loop turn(),90,88.0,1.98,play.py [TURN] log 2026-10-03
+closed_loop turn(),90,88.0,1.98,play.py [TURN] log 2026-10-03
+closed_loop turn(),-90,-88.0,1.97,play.py [TURN] log 2026-10-03
+closed_loop turn(),-45,-43.0,1.98,play.py [TURN] log 2026-10-03
+closed_loop turn(),-45,-43.0,1.99,play.py [TURN] log 2026-10-03
+closed_loop turn(),180,178.0,1.97,play.py [TURN] log 2026-10-03
