@@ -2,12 +2,12 @@
 
 Record each group member's ownership and contributions here.
 
-| Member | Matriculation No. | Primary task(s) | Key files / contributions |
-|---|---|---|---|
-| Student A | | Task 2 | |
-| Student B | | Task 3 | |
-| Student C | | Task 4 | |
+| Member | Matriculation No. | Primary task(s) | 
+|---|---|---|
+| Student A | Charansagar Ramanujam | Task 2, Task 3 | 
+| Student B | Alex | Task 1 , Evaluations Results | 
+| Student C | Marie | Task 4 | 
 
-Task 1 and Task 5 are group tasks.
+Task 5 and report are group tasks.
 
 Source files should also clearly identify the relevant contributor where appropriate.
